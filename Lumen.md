@@ -141,6 +141,38 @@ Surface Cache属性通常类似于GBuffer的属性，在导入模型的时候就
 
 ### Surface Cache资源管理
 
+#### Card Atlas
+
+Lumen通过Lumen.SceneXXX来存储Material Cache和Radiance Cache，**这种数据结构叫Card Atlas**。
+
+Material Cache对应的RDG资源名称为
+
+![image-20240123212629821](Lumen.assets/image-20240123212629821.png)
+
+Radiance Cache对应的资源名称为
+
+
+
+![image-20240123212855760](Lumen.assets/image-20240123212855760.png)
+
+#### Card Capture Atlas
+
+需要一提的是，Lumen通过光栅化对Mesh六个面的进行capture后，会把对应的Albedl、Normal、Emissive、Depth分别存储在四张大型的Render Target上，这就把所有的Mesh的Material Attribute都打包到一起了，存储在一个大图集上（Atlas），**这个Atlas 被称为Card Capture Atlas**，这么做可以降低RT交换的损耗。
+
+上面的Card Capture Atlas只是一个临时结构，最终会通过一个叫CopyCardsToSurfaceCache的Pass将Card Capture Atlas的数据Copy到Card Atlas上。
+
+#### Card Atlas的存储
+
+为了保证Card Atlas有足够的空间存储Material Attribute，Lumen中默认每个Card Atlas的大小为4K×4K，共有Depth、Albedo、Opacity、Normal、Emissive五张Atlas。
+
+如果每张贴图32位，共需要320MB显存，这是比较占用空间的，所以Lumen会通过硬件压缩的格式节约资源，
+
+![image-20240123214019388](Lumen.assets/image-20240123214019388.png)
+
+除了Depth之外都用了硬件压缩格式，这是因为需要通过Depth精确还原世界空间的位置以及精确计算Radiance Occlusion，因此不能用有损格式。
+
+
+
 
 
 ## Radiance Cache
