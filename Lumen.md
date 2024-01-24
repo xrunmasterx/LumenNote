@@ -147,11 +147,20 @@ Lumen通过Lumen.SceneXXX来存储Material Cache和Radiance Cache，**这种数�
 
 Material Cache对应的RDG资源名称为
 
+- Lumen.SceneAlbedo
+- Lumen.SceneOpacity
+- Lumen.SceneDepth
+- Lumen.SceneNormal
+- Lumen.SceneEmissive
+
 ![image-20240123212629821](Lumen.assets/image-20240123212629821.png)
 
 Radiance Cache对应的资源名称为
 
-
+- Lumen.SceneDirectLighting
+- Lumen.SceneIndirectLighting
+- Lumen.SceneNumFramesAccumulatedAtlas
+- Lumen.SceneFinalLighting
 
 ![image-20240123212855760](Lumen.assets/image-20240123212855760.png)
 
@@ -170,8 +179,6 @@ Radiance Cache对应的资源名称为
 ![image-20240123214019388](Lumen.assets/image-20240123214019388.png)
 
 除了Depth之外都用了硬件压缩格式，这是因为需要通过Depth精确还原世界空间的位置以及精确计算Radiance Occlusion，因此不能用有损格式。
-
-
 
 
 
@@ -201,7 +208,80 @@ Mesh Cards里面的Lighting Cache需要实时更新，但如果对整个Surface 
 
 ![image-20240122172056259](C:\Typora\Lumen.assets\image-20240122172056259.png)
 
-## 
+# Voxel Lighting
+
+Voxel Lighting是采用体素来存储光照，光照分帧累计，最终得到全局光照效果的一种GI方案。
+
+Lumen在运行时将Camera周围一定范围内的Lumen Scene体素化，然后通过对Voxel六个方向分别采样与Voxel相交的Mesh Distance Field，通过获取交点的Surface Cache的Final Lighting的Irradiance作为二次光影，对Voxel对应的那个面做光照注入。
+
+Voxel Lighting分为三步
+
+1. 场景体素化
+2. 发射ray采样
+3. 光照注入以及更新
+
+## Voxel 生成的优化手段
+
+直接对所有场景和物体进行体素化是不合理的，通常我们只对摄像机视野内可见的物体做体素化，在Lumen里面我们对所有视野范围内的场景进行Clipmap分层，再体素化并用3Dtexture来存储Voxel里的光照，当相机移出视野后，Voxel光照不变，可被下次trace复用。
+
+当摄像机位置改变，Clipmap也会改变，所以如果对所有体素进行更新是不合理的，所以Lumen对ClipMap进行了再分层，用Tile的形式存储Voxel，这样更新等操作都是通过对Tile进行检测并进行，就不需要每帧检测所有提速了，这种方式类似于BVH等的加速结构。
+
+### ClipMap
+
+ClipMap是一种比MipMap存储量更小的存储结构，所有ClipMap 具有相同的分辨率，所以ClipMap也能很好的保留场景的细节，Voxel的生成一般就通过ClipMap生成。
+
+下面是ClipMap和MipMap的对比。
+
+![image-20240124174731243](C:\UE\LumenNote\Lumen.assets\image-20240124174731243.png)
+
+Lumen将Voxel Lighting分为多个Clipmap，默认每个Clipmap里面有64×64×64个Voxel。
+
+第一级Clipmap 0覆盖的区域一般为2500cm，覆盖范围是（25×2）^3立方米，Clipmap一般有四级，每级覆盖的区域都是上一级的两倍。
+
+每个 Clipmap 对应的 Voxel 大小为 Clipmap Size / Clipmap Resolution，例如最细级别的 Clipmap 的 Voxel 大小为：(2500/64) x 2~= 78，即最小可覆盖 0.78^3 立方米的空间。
+
+### Tile
+
+Lumen通过网格化Clipmap的形式生成Tile，一个Tile包含4×4×4的Voxel，又因为每个Clipmap有 64x64x64 个 Voxels，所以每个Clipmap可划分为 16x16x16 个 Tiles。
+
+划分为Tile的目的有两个
+
+1. 在Camera移动的时候可以离散化的更新Clipmap
+2. 提供层次化更新机制，有利于提高GPU并行度，获得更好的性能。
+
+
+
+### Voxel Visibility Buffer
+
+为了完成采样 Surface Cache 的 Final Lighting，需要知道每个 Voxel 在每个方向上 Trace 到的 Mesh DF 信息，这个信息存储在 Voxel Visibility Buffer 中。与我们熟知的 Visibility Buffer 不同的是，这里存储的内容是 Mesh DF ID 以及归一化的 Hit Distance，在 Injecting Lighting 时就根据这些数据对 Final Lighting 采样。
+
+Lumen 将所有 Clipmap 的 Voxel 的 Visibility 都存储在同一个 Buffer 中，并且 Visibility Buffer 是跨帧持久化的，因此为了性能每帧会按需更新内容。
+
+
+
+## Voxel的存储手段
+
+Lumen采用3D Texture的手段存储Voxel各个方向的光照Irradiance，这张3D纹理上的每一个Texel都代表一个Voxel在某个方向上的Lighting。
+
+要注意这边的3D Texture内xyz轴并不是存储对应轴向的光照信息。
+
+在3D Texture内，X轴存的是不同的Voxel，Y轴存的是同一个Voxel不同Clipmap级别的Lighting信息，Z轴存的是同一个Voxel不同的方向，需要3维的信息(Voxel，Direction，Clipmap)才能表示某一个Tiexl的Lighting信息。
+
+![image-20240124180008170](C:\UE\LumenNote\Lumen.assets\image-20240124180008170.png)
+
+## 场景体素化
+
+要体素化场景，我们先找都每个面元在哪个Clipmap上，然后把整个像素的WorldPosition转换成屏幕UV，查询该面元在哪个Voxel范围内，生成对应的体素，同时根据后续算法注入光照，为体素每个面收集Lighting信息。
+
+## 采样
+
+UE采用多种采样策略，通常通过求得体素发射ray到其他体素的交点来得到二次光源的Lighting信息，
+
+## 光照注入及更新
+
+
+
+
 
 
 
