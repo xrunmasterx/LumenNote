@@ -2,7 +2,7 @@
 
 **总览**
 
-<img src="C:\Typora\Lumen.assets\image-20240122152736340.png" alt="image-20240122152736340"  />
+![image-20240207122429057](C:\UE\LumenNote\Lumen.assets\image-20240207122429057.png)
 
 # 加速结构
 
@@ -16,9 +16,7 @@ GDF准确度较低，但拥有最快的tracing速度，GDF由多个低分辨率M
 
 ![image-20240122154013829](C:\Typora\Lumen.assets\image-20240122154013829.png)
 
-UE一般混用这三种加速结构
 
-![image-20240122153730913](C:\Typora\Lumen.assets\image-20240122153730913.png)
 
 UE加速方案如下
 
@@ -26,6 +24,8 @@ UE加速方案如下
 2. 如果Screen Space Trace失败，采用MDF，SDF Trace的距离为1.8米，Trace距离短，也就是只能Trace很近的物体，如果能Trace到返回Mesh ID，可以通过ID获取Surface Cache。
 3. 远处物体用GDF，如果需要高精度，先用GDF步进到一定距离再用MDF，如果精度低，直接用GDF一步到位获取结果。
 4. 如果GDF也失败了，从CubeMap采样。
+
+UE一般混用这几中加速方案![image-20240207150943599](C:\UE\LumenNote\Lumen.assets\image-20240207150943599.png)
 
 ## Hi-Z
 
@@ -65,6 +65,8 @@ MDF一般在Mesh Card导入的时候就预计算生成了，因为MDF一般是�
 
 ![image-20240122155405967](C:\Typora\Lumen.assets\image-20240122155405967.png)
 
+计算SDF选择的位置都是一系列离散的点，如果有些物体太薄了，SDF的间距都要比物体厚，这样生成的SDF就永远不会为0或者是负数，这时如果用SDF做Ray Marching，在接近物体表面的时候由于找到的所有点都是正数，所以Ray一定会击穿物体，所以这就会导致漏光，同时通过梯度计算的法线也会出错。
+
 #### 如何生成MDF？
 
 因为SDF显存占用过高，所以对SDF进行稀疏化处理，在生成MDF的时候只生成很薄的一层SDF，这样可以节省存储量。
@@ -79,13 +81,21 @@ SDF可以做LOD，同时LOD是空间上连续可导的，可以用LOD反向求�
 
 LOD和稀疏SDF可以节省40%到60%的空间，对于远处的物体我们可以用Low SDF，近处的物体再用High SDF，这样可以很好的控制内存消耗。
 
+为了节省内存和传输的带宽，一般不同LOD的Mesh SDF都会存在同一张Page Atlas里面，这样紧凑的布局可以最大程度的提高效率
+
+![image-20240207125021884](C:\UE\LumenNote\Lumen.assets\image-20240207125021884.png)
+
+Mesh SDF的数据通过一个简单的线性分配器来管理，所有的数据都存储在一个固定大小的池子里，且并不是所有的Mesh SDF的数据都传入显存中，一般情形下，只加载200米以内的Mesh SDF数据，这些数据通过流式加载进GPU，每次只更新需要的Mesh SDF，不需要的就删除掉，这样所有需要用到的SDF数据紧凑的排布在内存池内，可以避免数据碎片化带来的内存浪费。
+
 ### GDF（Global Distance Fields）
 
 #### 为什么需要GDF？
 
-如果只用给MDF去做Ray Trace速度会很快，精确度也很高，但是如果Mesh特别多的时候，因为MDF只有薄薄一层的SDF，所以远处的ray需要对每个Mesh生成一个SDF再判断哪个SDF最小再使用，这样就需要遍历很多Mesh的MDF，非常耗费性能，所以提出了GDF的概念。
+如果只用给MDF去做Ray Trace速度会很快，精确度也很高，但是如果Mesh特别多的时候，因为MDF只有薄薄一层的SDF，所以远处的ray需要对每个Mesh生成一个SDF再判断哪个SDF最小再使用，这样就需要遍历很多Mesh的MDF，非常耗费性能，所以提出了GDF的概念。![image-20240207143055449](C:\UE\LumenNote\Lumen.assets\image-20240207143055449.png)
 
-#### GDF原理
+详细来说其实是GDF和MDF结合的方式，上面的场景每个Pixel都有非常多的网格，这种情况用BVH或者八叉树能够提升Ray Marching效率，但尽管如此，同一个包围盒里面还是会有非常多的物体，包围盒遍历的物体数量不同带来的负载平和和树的深度不一致也会打断GPU的并行，所以UE采用了近处的物体的Mesh SDF直接用均匀网格的方式进行划分，如果没找到近处的Mesh SDF，则采用GDF进行远距离的步进。
+
+#### GDF原理 
 
 GDF是整个场景的SDF，通常GDF的精度都比较低，低精度的GDF是通过场景中每个MDF共同合成的。
 
@@ -101,9 +111,27 @@ MDF可视化
 
 GDF一般需要实时生成，因为GDF相对于世界空间，而世界空间里面物体随时可能变换位置，所以GDF需要实时生成。
 
+#### GDF的更新
+
+![image-20240207151027464](C:\UE\LumenNote\Lumen.assets\image-20240207151027464.png)
+
+把场景中所有的Mesh SDF合并成GDF是非常消耗时间的过程，如果对每个MDF都遍历一次，这是承受不起的，UE采用了设置ClipMap的LOD和把静态物体和动态物体分开更新两种优化大大加速了GDF的更新。
+
+UE为每个ClipMap设置了单独的LOD，越远的场景越粗糙，这样相当丢弃了远处较小对象的实例，越远的ClipMap需要合并的实例就越少。
+
+而较近的物体分成静态和动态，通常场景中只有少数物体在移动，所以只需要找到那一小部分在移动的物体所在的bricks并用容器将brkcks记录下来，形成一个类似于Mask的区域，只需要更新这个区域里面的距离场便可以![image-20240207151040689](C:\UE\LumenNote\Lumen.assets\image-20240207151040689.png)
+
 # Mesh Card
 
-Mesh Card是一种结构的统称，在Lumens里面，我们每个导入的物体都会生成一套Mesh Card。Mesh Card 是Mesh的一种属性结构，用于记录数据。
+## 为什么需要用Mesh Card
+
+SDF已经大大加速了Ray Marching，但是SDF只存空间中的点到物体的最近距离，也就是这时只有HIt Point的Positon，没办法获取到Material信息，没有材质自然也就无法计算光照，因此我们需要一种结构，在SDF获取到Hit Point的同时也能找到对应的Material。
+
+MeshCard便是这种数据结构，他不仅能够在获取到Hit Positon，还能通过Hit Positon映射到Mesh Card对应的位置获取Surface Cache和Radiance Cache。
+
+## MeshCard细节
+
+Mesh Card是一种结构的统称，在Lumens里面，我们每个导入的物体都会离线生成一套Mesh Card。Mesh Card 是Mesh的一种属性结构，用于记录数据。要注意的是，MeshCard同时包含Surface Cache和Radiance Cache，Material属性一般都不会改变，所以在离线生成Mesh Card1的时候一般都会直接写入Surface Cache数据，但Radiance会每帧变化，所以每帧都会选择部分需要更新的Mesh Card更新Radiance Cache。
 
 UE里面捕获Mesh Card的方式是通过对6个轴对齐方向（上、下、左、右、前、后）进行光栅化，获取Mesh对应的材质中的Material Attributes（Albedo、Opacity、Normal、Emissive）并存储到Surface Cache上，同时需要捕获的还有对应观察角度的Hit Point，每个面的Hit Point数据需要进行物理地址转换到Surface Cache图集空间中执行采样。
 
@@ -190,9 +218,11 @@ Radiance Cache对应的资源名称为
 
 ## Radiance Cache
 
-Mesh Card不只记录Material（Surface ）的属性，还需要记录光照的Radiance属性，这是为了间接光的复用，我们不可能在相交点发射无数光线去不停的递归计算间接光，所以我们把每一次的光照结果固定下来。
+Mesh Card不只记录Material（Surface ）的属性，还需要记录光照的Radiance属性，这是为了间接光的复用，我们不可能在相交点发射无数光线去不停的递归计算间接光，所以我们把每一次的光照结果固定下来，Radiance Cache算的是Irradiance。
 
-**分帧算法**
+要注意的是，计算Radiance Cache的方式并不是直接获取Hit Position的Material直接算光照，而是通过下面用临时Probe做分帧计算，最后结果再存进Radiance Cache，Ray打到Hit Point的时候，我们直接取Radiance Cache里的值就行了。这么做的原因是提高光线追踪的并行效率，因为每条光线碰到的Hit Point的材质可能相差很大，很难保证局部性，所以Lumen将Surface的光照解耦，将其分摊到多帧中计算，而这些Radiance Cache可以被后续帧复用。
+
+### 分帧算法
 
 第一帧先把直接光记录到Radiance Cache里面
 
@@ -202,7 +232,7 @@ Mesh Card不只记录Material（Surface ）的属性，还需要记录光照的R
 
 ![image-20240122170702816](C:\Typora\Lumen.assets\image-20240122170702816.png)
 
-如果对每一个Texel都去Trace光线收集Radiance是现实的，哪怕是分帧，每个Texel都去发射光线还是会造成很大能耗，因为间接光材质默认是Diffues的，所以我们以每16×16为一个单位通过八面体映射的技术用Probe记录Radiance，再转换成SH来降低存储，这样可以大幅度加快实时Trace效率，又因为是低频信号，所以结果也很不错。
+如果对每一个Texel都去Trace光线收集Radiance是不现实的，哪怕是分帧，每个Texel都去发射光线还是会造成很大能耗，因为间接光材质默认是Diffues的，所以我们以每16×16为一个单位通过八面体映射的技术用Probe记录Radiance，再转换成SH来降低存储，这样可以大幅度加快实时Trace效率，又因为是低频信号，所以结果也很不错。
 
 ![image-20240122171805507](C:\Typora\Lumen.assets\image-20240122171805507.png)
 
