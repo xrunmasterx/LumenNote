@@ -6,6 +6,8 @@
 
 # 软件光线追踪
 
+UE默认采用软件光线追踪，因为软件光线追踪可以无视平台和硬件的限制带来跟硬件光线追踪质量相近的结果，同时软件光线追踪采用的大量加速结构使得它在很多复杂的场景性能反而比硬件光线追踪高。
+
 ## 软件光线追踪加速结构
 
 Lumen里面软件光追用到的比较普遍的加速结构有三种，Hi-Z、MDF和GDF。
@@ -35,6 +37,14 @@ UE一般混用这几中加速方案![image-20240207150943599](C:\UE\LumenNote\Lu
 
 ### SDF
 
+#### SDF原理
+
+用SDF做Ray Tracing可以理解为用SDF的值去当做步长来做Ray Marching，形象一点理解就是下图的Sphere tracing，SDF的值代表着这个点到最近Mesh的距离，也就是以这个距离为半径的圆的范围内一定没有物体，以SDF的值去步进可以快速的跳过大范围的空白区域。
+
+![image-20240211184735601](Lumen.assets/image-20240211184735601.png)
+
+哪怕在接近表面的时候因为某些插值过后的SDF导致Ray穿进了物体内部，因为SDF的有符号性，内部的负数也会让Ray回退回去，所以SDF是一种安全且快速的步进方法。
+
 #### MDF和GDF（Mesh&Global Distance Field）
 
 Lumen混合使用了SDFGI，也就是基于MDF和SDF的Marching，混合的SDFGI对大世界复杂场景有着更高的效率和兼容性，因为在大世界物体非常多，我们不可能对每个MDF都遍历一遍，所以做Ray Marching必须要场景管理，通常的BVH或者是八叉树在GPU中可以起到加速的作用，但往往会因为树的深度不一或者是BVH和八叉树的不规则性导致负载平衡的问题，也就是某些线程处理的任务较多但其他线程处于空闲的状态，这会导致GPU并行性较差。
@@ -45,13 +55,13 @@ Lumen采取了MDF和GDF混合的巧妙方法来解决GPU并行性问题，在离
 
 1. SDF就能加速ray求交
 
-每次步进SDF的距离，可以以log2的代价对光线快速求教，如下面右图。
+每次步进SDF的距离，可以以log2的代价对光线快速求交，同样SDF也能避免左图固定步长带来的Ray穿过薄物体的问题。
 
 ![image-20240209140324627](C:\UE\LumenNote\Lumen.assets\image-20240209140324627.png)
 
 2. SDF可以快速模拟软阴影
 
-我们可以通过SDF过程中产生的最小角度来模拟光照的最大通量，如下图黄圈，黄圈p3的角度最小，可以近似理解为光能通过这条光路照到o点的覆盖角度只有Θ_3度。
+我们可以通过SDF过程中产生的最小角度来模拟光照的最大通量，如下图黄圈，黄圈p3的角度最小，可以近似理解为光能通过这条光路照到o点的覆盖角度只有θ3的度数。
 
 ![image-20240209140437146](C:\UE\LumenNote\Lumen.assets\image-20240209140437146.png)
 
@@ -69,7 +79,7 @@ MDF一般在Mesh Card导入的时候就预计算生成了，因为MDF一般是�
 
 ![image-20240209140711882](C:\UE\LumenNote\Lumen.assets\image-20240209140711882.png)
 
-计算SDF选择的位置都是一系列离散的点，如果有些物体太薄了，SDF的间距都要比物体厚，这样生成的SDF就永远不会为0或者是负数，这时如果用SDF做Ray Marching，在接近物体表面的时候由于找到的所有点都是正数，所以Ray一定会击穿物体，所以这就会导致漏光，同时通过梯度计算的法线也会出错。
+计算SDF选择的位置都是一系列离散的点，如果有些物体太薄了，SDF的间距都要比物体厚，这样生成的SDF就永远不会为0或者是负数（**这是因为两个SDF采样点之间的SDF值是插值得来的，两个正数插值还是正数，如上图红点插值后还是5**），这时如果用SDF做Ray Marching，在接近物体表面的时候由于找到的所有点都是正数，所以Ray一定会击穿物体，所以这就会导致漏光，同时通过梯度计算的法线也会出错。
 
 ##### 如何生成MDF？
 
@@ -149,6 +159,8 @@ RTX 2080 Ti [在标准测试模型上每秒可以计算超过 100 亿个最近�
 
 ### 顶层加速结构(Top Level Acceleration Structure)&底层加速结构(BLAS)
 
+#### TLAS&BLAS原理
+
 UE硬件光线追踪采用**顶层加速结构**来加速Ray Marching
 
 顶层加速结构类似于一个大型的BVH，不过BVH里节点指向的是底层的加速结构（BLAS），底层加速结构其实就是由多个三角形或者几何表达组成的实例。![image-20240210175539587](Lumen.assets/image-20240210175539587.png)
@@ -183,7 +195,9 @@ SDF已经大大加速了Ray Marching，但是SDF只存空间中的点到物体�
 
 MeshCard便是这种数据结构，他不仅能够在获取到Hit Positon，还能通过Hit Positon映射到Mesh Card对应的位置获取Surface Cache和Radiance Cache。
 
-## MeshCard细节
+Mesh Card还有一个重要的作用，就是存储我们看不到的Pixel的能量，当我们视野移出某个场景，这个场景内的光照信息会被持久存储到Mesh Card里，这种在世界空间的结构体可以很有效的补全屏幕空间的缺失的信息。
+
+## MeshCard原理
 
 Mesh Card是一种结构的统称，在Lumens里面，我们每个导入的物体都会离线生成一套Mesh Card。Mesh Card 是Mesh的一种属性结构，用于记录数据。要注意的是，MeshCard同时包含Surface Cache和Radiance Cache，Material属性一般都不会改变，所以在离线生成Mesh Card1的时候一般都会直接写入Surface Cache数据，但Radiance会每帧变化，所以每帧都会选择部分需要更新的Mesh Card更新Radiance Cache。
 
@@ -316,13 +330,17 @@ Voxel Lighting分为三步
 
 直接对所有场景和物体进行体素化是不合理的，通常我们只对摄像机视野内可见的物体做体素化，在Lumen里面我们对所有视野范围内的场景进行Clipmap分层，再体素化并用3Dtexture来存储Voxel里的光照，当相机移出视野后，Voxel光照不变，可被下次trace复用。
 
-当摄像机位置改变，Clipmap也会改变，所以如果对所有体素进行更新是不合理的，所以Lumen对ClipMap进行了再分层，用Tile的形式存储Voxel，这样更新等操作都是通过对Tile进行检测并进行，就不需要每帧检测所有提速了，这种方式类似于BVH等的加速结构。
+当摄像机位置改变，Clipmap也会改变，所以Lumen对ClipMap进行了再分层，用Tile的形式存储Voxel，这样更新等操作都是通过对Tile进行检测并进行，就不需要每帧检测所有体素了，这种方式类似于BVH等的加速结构。
 
 ### ClipMap
 
 ClipMap是一种比MipMap存储量更小的存储结构，所有ClipMap 具有相同的分辨率，所以ClipMap也能很好的保留场景的细节，Voxel的生成一般就通过ClipMap生成。
 
-下面是ClipMap和MipMap的对比。
+![image-20240211134003081](Lumen.assets/image-20240211134003081.png)
+
+用ClipMap生成Voxel意味着，越远的物体的Voxel就越大，Voxel里面的信息也就越粗糙，但结果是可以接受的，因为远处的物体对近处我们看到的东西影响确实很小。
+
+下面是ClipMap和MipMap的存储对比。
 
 ![image-20240124174731243](C:\UE\LumenNote\Lumen.assets\image-20240124174731243.png)
 
@@ -330,18 +348,21 @@ Lumen将Voxel Lighting分为多个Clipmap，默认每个Clipmap里面有64×64×
 
 第一级Clipmap 0覆盖的区域一般为2500cm，覆盖范围是（25×2）^3立方米，Clipmap一般有四级，每级覆盖的区域都是上一级的两倍。
 
-每个 Clipmap 对应的 Voxel 大小为 Clipmap Size / Clipmap Resolution，例如最细级别的 Clipmap 的 Voxel 大小为：(2500/64) x 2~= 78，即最小可覆盖 0.78^3 立方米的空间。
+每个 Clipmap 对应的 Voxel 大小为 Clipmap Size / Clipmap Resolution，例如最细级别的 Clipmap 的 Voxel 大小为：(2500/64) x 2~= 78，即最小可覆盖 0.78^3 立方米的空间。![image-20240212172821242](Lumen.assets/image-20240212172821242.png)
+
+不同的ClipMap内Voxel更新规则也不一样，越靠近摄像机越精细的ClipMap更新频率就高，而远处没那么精细的ClipMap内的Voxel更新频率就低，这是因为人眼对近处变化远比对远处变化要敏感。
+
+ClipMap可以以更小的存储代价带来不必MipMap差的效果。
 
 ### Tile
 
 Lumen通过网格化Clipmap的形式生成Tile，一个Tile包含4×4×4的Voxel，又因为每个Clipmap有 64x64x64 个 Voxels，所以每个Clipmap可划分为 16x16x16 个 Tiles。
 
-划分为Tile的目的有两个
+划分为Tile的目的有三个
 
 1. 在Camera移动的时候可以离散化的更新Clipmap
 2. 提供层次化更新机制，有利于提高GPU并行度，获得更好的性能。
-
-
+3. 用Tile的方式去构建Voxel（详细见下面）
 
 ### Voxel Visibility Buffer
 
@@ -363,11 +384,51 @@ Lumen采用3D Texture的手段存储Voxel各个方向的光照Irradiance，这�
 
 ## 场景体素化
 
-要体素化场景，我们先找都每个面元在哪个Clipmap上，然后把整个像素的WorldPosition转换成屏幕UV，查询该面元在哪个Voxel范围内，生成对应的体素，同时根据后续算法注入光照，为体素每个面收集Lighting信息。
+要体素化场景，我们先找都每个面元在哪个Clipmap上（因为ClipMap上的Voxel大小不同，所以要分开做），然后把整个像素的WorldPosition转换成屏幕UV，查询该面元在哪个Voxel范围内，一个Voxel往往包括了非常多的面元，我们要做的就是把Voxel里面所有面元的影响都通过某种方式累积到对应的Voxel上。
+
+我们在Shader里可以算出这个Pixel属于哪个Voxel，但无法确定这个Pixel是否会对Voxel产生影响，因为多个Pixel重叠的时候我们只保留深度最小的，为了能在Voxel累积尽可能多的信息，我们要选一个能生成最多Pixel的投影方向进行计算。![image-20240211140621881](Lumen.assets/image-20240211140621881.png)
+
+如上图采用跟法线最接近垂直的面进行投影，可以获得最多的Pixel，这样也能累积最多的信息来减少Voxel的误差。
+
+需要注意的是，上面的投影用保守光栅化的方式可以保留更多的信息，可以在对ClipMap内全部物体做光栅化时用完整的几何信息做MSAA来实现保守光栅化，VXGI就是这么做的。
+
+Lumen构建Voxel的方式不是保守光栅化，而是用发射射线的方式。
+
+![image-20240217201219494](Lumen.assets/image-20240217201219494.png)
+
+Lumen对单个Voxel每条边上随机发射一条Ray进去，如果能打中任意一个Mesh，就说明这个Voxel不能为空。
+
+Lumen通过划分Tile来加速求交构建Voxel的过程。
+
+每个Tile有16×16×16个Voxel，这里的Tile是一种加速结构，Lumen会先求出Tile里面包含的Mesh，这样Tile里面的每个Voxel直接对这些Mesh遍历求交就行了，相比于不划分Tile对每个Voxel遍历一堆Mesh找出交点这种时间是m×n的算法，划分Tile可以让这个过程时间缩短为m+n，这种划分Tile思想类似于多光源优化里的Tile Base Renderding。![image-20240217202330571](Lumen.assets/image-20240217202330571.png)
 
 ## 采样
 
-UE采用多种采样策略，通常通过求得体素发射ray到其他体素的交点来得到二次光源的Lighting信息，
+#### 间接结构
+
+在构建完体素以后需要把光照注入到这些体素里面，要注入光照首先就得找到“光源”，因此采样的快慢决定了光照更新的速度。
+
+Lumen里采用逐帧累积的方式来表示不断反弹的光线，Voxel其实是一种间接结构，第一帧的Voxel的Radiance其实是从Surface Cache中的Final Lighting中采样的Irradiance。第一帧需要从Surface Cache里面去获取直接光照并注入Voxel里，这时Voxel里的光照数据在第二帧用，第二帧Surface Cache以上一帧算出来的Voxel为二次光源算间接光，更新Voxel下一帧用，以此类推。
+
+采用Voxel这种间接结构的原因是Voxel相比于Surface Cache是一种更粗糙的数据结构，可以理解为记录的是很多Surface Cache的光照的平均，但间接光并不需要很惊喜，所以用这种粗糙的数据结构能够在减少计算量的同时得到不俗的效果。
+
+#### Cone Tracing
+
+采样Voxel用的是Cone Tracing，Cone Tracing其实就是根据圆锥体来采样，一般来说知道BRDF可以通过求Lobe（包含有贡献的光源的锥体）范围内光源来计算光照。
+
+![image-20240217224954817](Lumen.assets/image-20240217224954817.png)
+
+在Voxel里，可以理解这个圆锥体包含的光源是由不同级别的Voxel组合而成的，因为Voxel记录的其实是对应范围内的光源的综合影响，所以锥体采样（Cone Tracing）也就可以转换为采样不同级别的Voxel按一定权重带来的影响。
+
+![image-20240217224415716](Lumen.assets/image-20240217224415716.png)
+
+这种方式根据距离来决定要采样哪张ClipMap上的Voxel，再通过UV Scale 和UV Bias计算3D里的UV，最终可以从对应的ClipMap里采样到对应的方向Voxel，而这个方向一般是由对应方向附近的3条法线（可以想象成坐标轴基底）按一定权重混合得到的。
+
+![image-20240217225355079](Lumen.assets/image-20240217225355079.png)
+
+Voxel的权重一般根据遮挡程度来计算
+
+![image-20240217225750532](Lumen.assets/image-20240217225750532.png)
 
 ## 光照注入及更新
 
