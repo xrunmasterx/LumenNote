@@ -462,13 +462,15 @@ Mesh Card生成好以后会储存在一张Card Page里面，Lumen在Card Page上
 
 Lumen会在对应的Card Page Tile范围生成包围盒，通过包围盒判断光源是否能造成影响，如果有影响，将Light影响的所有Tile连续存储进**RWLightTilesPerCardTile**这个Buffer中。
 
-一般来说每个Card Page Tile 含有8×8=64个Pixel。
+一般来说每个Card Page Tile 含有8×8=64个Texels。
 
 
 
 ## 阴影处理
 
+通常情况下，Dense SM和VSM对阴影的计算都是Camera Visibility的，我们只要算可见场景的阴影，而且一般Deferred Rendering的Gbuffer只有视野范围内最表层的信息，不可见的Pixel都被剔除了。
 
+但由于Mesh Card记录的光照
 
 ## Final Gather
 
