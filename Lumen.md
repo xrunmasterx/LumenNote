@@ -270,7 +270,7 @@ Radiance Cache对应的资源名称为
 
 需要一提的是，Lumen通过光栅化对Mesh六个面的进行capture后，会把对应的Albedl、Normal、Emissive、Depth分别存储在四张大型的Render Target上，这就把所有的Mesh的Material Attribute都打包到一起了，存储在一个大图集上（Atlas），**这个Atlas 被称为Card Capture Atlas**，这么做可以降低RT交换的损耗。
 
-上面的Card Capture Atlas只是一个临时结构，最终会通过一个叫CopyCardsToSurfaceCache的Pass将Card Capture Atlas的数据Copy到Card Atlas上。
+上面的Card Capture Atlas只是一个临时结构，用于记录每帧更新的Surface数据，最终会通过一个叫CopyCardsToSurfaceCache的Pass将Card Capture Atlas的数据Copy到Card Atlas上。
 
 #### Card Atlas的存储
 
@@ -314,7 +314,7 @@ Mesh Cards里面的Lighting Cache需要实时更新，但如果对整个Surface 
 
 ![image-20240209142655041](C:\UE\LumenNote\Lumen.assets\image-20240209142655041.png)
 
-# Voxel Lighting
+# Voxel Lighting（UE5.1已砍）
 
 Voxel Lighting是采用体素来存储光照，光照分帧累计，最终得到全局光照效果的一种GI方案。
 
@@ -354,6 +354,16 @@ Lumen将Voxel Lighting分为多个Clipmap，默认每个Clipmap里面有64×64×
 
 ClipMap可以以更小的存储代价带来不必MipMap差的效果。
 
+### Voxel Visibility Buffer
+
+为了完成采样 Surface Cache 的 Final Lighting，需要知道每个 Voxel 在每个方向上 Trace 到的 Mesh DF 信息，这个信息存储在 Voxel Visibility Buffer 中。与我们熟知的 Visibility Buffer 不同的是，这里存储的内容是 Mesh DF ID 以及归一化的 Hit Distance，在 Injecting Lighting 时就根据这些数据对 Final Lighting 采样。
+
+Lumen 将所有 Clipmap 的 Voxel 的 Visibility 都存储在同一个 Buffer 中，并且 Visibility Buffer 是跨帧持久化的，因此为了性能每帧会按需更新内容。
+
+但有一个问题，每个Clipmap里面有64×64×64个Voxel，每个Voxel有6个方向的光照需要算，如果每帧都对每个Voxel更新就需要做64×64×64×6~=157万次计算，Lumen采用了只用变化了的Voxel更新Visibility Buffer的策略。
+
+Lumen在FLumenSceneData里面又有个AABB列表PrimitiveModifiedBounds，变化的空间信息存在PrimitiveModifiedBounds里面，用这个列表对每个Voxel做简单的相交测试便可以筛选出发生变化的Voxel了。
+
 ### Tile
 
 Lumen通过网格化Clipmap的形式生成Tile，一个Tile包含4×4×4的Voxel，又因为每个Clipmap有 64x64x64 个 Voxels，所以每个Clipmap可划分为 16x16x16 个 Tiles。
@@ -364,13 +374,7 @@ Lumen通过网格化Clipmap的形式生成Tile，一个Tile包含4×4×4的Voxel
 2. 提供层次化更新机制，有利于提高GPU并行度，获得更好的性能。
 3. 用Tile的方式去构建Voxel（详细见下面）
 
-### Voxel Visibility Buffer
-
-为了完成采样 Surface Cache 的 Final Lighting，需要知道每个 Voxel 在每个方向上 Trace 到的 Mesh DF 信息，这个信息存储在 Voxel Visibility Buffer 中。与我们熟知的 Visibility Buffer 不同的是，这里存储的内容是 Mesh DF ID 以及归一化的 Hit Distance，在 Injecting Lighting 时就根据这些数据对 Final Lighting 采样。
-
-Lumen 将所有 Clipmap 的 Voxel 的 Visibility 都存储在同一个 Buffer 中，并且 Visibility Buffer 是跨帧持久化的，因此为了性能每帧会按需更新内容。
-
-
+划分Tile的方式给Lumen提供了更极致的性能，相比于用Voxel与记录了空间信息的PrimitiveModifiedBounds做相交测试来筛选变化Voxel，用更粗粒度的Tile去做相交测试可以更快选出相交的Tile，筛选速度大大加快了，同时每个Tile里面有64个Voxel，而GPU每个warp有64个通道，每个warp计算一个Tile这样充分发挥了GPU的并行性。
 
 ## Voxel的存储手段
 
@@ -404,7 +408,7 @@ Lumen通过划分Tile来加速求交构建Voxel的过程。
 
 ## 采样
 
-#### 间接结构
+### 间接结构
 
 在构建完体素以后需要把光照注入到这些体素里面，要注入光照首先就得找到“光源”，因此采样的快慢决定了光照更新的速度。
 
@@ -412,7 +416,7 @@ Lumen里采用逐帧累积的方式来表示不断反弹的光线，Voxel其实�
 
 采用Voxel这种间接结构的原因是Voxel相比于Surface Cache是一种更粗糙的数据结构，可以理解为记录的是很多Surface Cache的光照的平均，但间接光并不需要很惊喜，所以用这种粗糙的数据结构能够在减少计算量的同时得到不俗的效果。
 
-#### Cone Tracing
+### Cone Tracing
 
 采样Voxel用的是Cone Tracing，Cone Tracing其实就是根据圆锥体来采样，一般来说知道BRDF可以通过求Lobe（包含有贡献的光源的锥体）范围内光源来计算光照。
 
@@ -430,15 +434,45 @@ Voxel的权重一般根据遮挡程度来计算
 
 ![image-20240217225750532](Lumen.assets/image-20240217225750532.png)
 
-## 光照注入及更新
-
-
-
-
-
 
 
 # Scene Dirct Lighting 
+
+Lumen里对直接光的处理分为三步
+
+1. 对多光源的处理
+2. 对阴影的处理
+3.  计算Final Gather
+
+## 多光源处理
+
+### Tile Base&Cluster Culling
+
+在Deferred Rendering中，为了进一步优化性能，一般都会做多光源优化，比较常见的方式是Screen Space Tile Culling和Cluster Culling。
+
+Screen Space Tile Culling 是基于屏幕空间对光源进行划分，把屏幕分成一定数量的Tile，每个Tile通过光源索引找出对这个Tile里面的Mesh有影响的光源，这个方法适合处理有着大量光源的场景，但对于某些特殊情况，如地铁隧道里面由于透视的关系大部分的光源都在一个Tile里面，这就会出现很远处的光源会对很近的物体造成影响的问题。![image-20240218174726077](Lumen.assets/image-20240218174726077.png)
+
+而Cluster Culling的做法就是在Tile Base的基础上根据距离在横向再划分一次Tile，这个Tile的划分由距离决定，这样一块Tile表示的不再是一整个锥体，而是锥体里的一小块空间，用这种办法筛选的光源就准确很多了。![image-20240218175343761](Lumen.assets/image-20240218175343761.png)
+
+### Card Page Tile Culling
+
+Lumen对多光源的处理用的是Card Page Tile的方式，这种方式不再是在屏幕空间划分区域找区域内光源，而是找出光源会影响哪些区域。
+
+Mesh Card生成好以后会储存在一张Card Page里面，Lumen在Card Page上进行Tile划分，可以理解为在Card Page上的每个Tile表示的是某个区域内的Mesh Card，只有在对应范围内的光源才会对这片区域的Mesh Card造成影响。
+
+Lumen会在对应的Card Page Tile范围生成包围盒，通过包围盒判断光源是否能造成影响，如果有影响，将Light影响的所有Tile连续存储进**RWLightTilesPerCardTile**这个Buffer中。
+
+一般来说每个Card Page Tile 含有8×8=64个Pixel。
+
+
+
+## 阴影处理
+
+
+
+## Final Gather
+
+
 
 # Scene Indirect Lighting（Radiosity）
 
