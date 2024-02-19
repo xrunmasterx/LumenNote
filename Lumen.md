@@ -482,3 +482,82 @@ Lumen会在对应的Card Page Tile范围生成包围盒，通过包围盒判断�
 
 
 
+
+
+
+
+# UE5.3源码
+
+## RHI（Rendering Hardware Interface）资源
+
+RHI是跨平台的渲染硬件的接口，RHI提供了一组通用的API调用，用于统一执行OpenGL、D3D12和Vulkan等不同语言的渲染操作。RHI父类只定义不实现，渲染功能由子类去实现。
+
+RHI资源通过继承机制实现，父类是FRHIResource
+
+![image-20240219112627700](Lumen.assets/image-20240219112627700.png)
+
+在RHIResources.h里面实现了FRHIResource的Release等基本操作，不同Shader语言的功能通过继承FRHIResource的接口来实现
+
+UE在执行渲染之前会先判断该平台用哪种Shader Language来渲染，然后通过调用RHI通用接口对应语言的子类型实现来渲染，举个例子如果平台启用D3D12来渲染，那就会用FRHIResource的子类D3D12Resource下资源来渲染，类似于虚函数通过父类调用不同子类来实现多态。
+
+如下面FVulkanUniformBuffer就是继承FRHIUniformBuffer实现的
+
+![image-20240219113331092](Lumen.assets/image-20240219113331092.png)
+
+## FDynamicRHI
+
+FDynamicRHI定义了大部分创建纹理、创建状态、创建更新资源、创建更新贴图等常见操作，都是在FDynamicRHI内定义，通过子类实现的，所以我们可以通过调用FDynamicRHI的函数实现大部分资源操作。
+
+举个例子，UE里面通过CreateVertexShader这个函数来创建VertexShader，这个函数调用的是DynamicRHI里的RHICreateVertexShader，这个函数由子类实现。
+
+![image-20240219141445916](Lumen.assets/image-20240219141445916.png)
+
+![image-20240219141516956](Lumen.assets/image-20240219141516956.png)
+
+下面是RHICreaterVertexShader在OpenGL里的实现
+
+![image-20240219141815654](Lumen.assets/image-20240219141815654.png)
+
+![image-20240219141859653](Lumen.assets/image-20240219141859653.png)
+
+UE5.3新增了FOpenGLShader这个父类来对FopenGLVertexShader进行初始化
+
+FShaderCodeReader用来解析Code，因为Code里面包含多段内容，需要把代码和数据部分分开来。
+
+GLSLTOPlatform把GLSL适配到不同的平台。
+
+![image-20240219143026180](Lumen.assets/image-20240219143026180.png)
+
+最后在创建上下文中声明Vertex后通过ConditionalyCompile去编译Shader
+
+![image-20240219144318679](Lumen.assets/image-20240219144318679.png)
+
+## FRHIShader
+
+FRHIShader继承自FRHIResource，是所有Shader类型的父类，不同类型的Shader功能通过继承FRHIShader父类实现。FRHIShader是最底层的Shader类型。
+
+![image-20240219132626857](Lumen.assets/image-20240219132626857.png)
+
+EShaderFrequency代表Shader类型
+
+![image-20240219132720215](Lumen.assets/image-20240219132720215.png)
+
+子类通过继承中间类FRHIGraphicsShader来实现父类的函数，一般VertexShader、PixelShader都是通过这种方式来实现的。
+
+![image-20240219133053232](Lumen.assets/image-20240219133053232.png)
+
+举个例子，DX12内的VertexShader通过继承FRHIVertexShader实现
+
+![image-20240219133641224](Lumen.assets/image-20240219133641224.png)
+
+FD3D12ShaderData用来存储Shader主要的数据，比如Code也就是Shader代码
+
+![image-20240219133837563](Lumen.assets/image-20240219133837563.png)
+
+## FShader
+
+FShader是上层逻辑里Shader的基类，底层通过FRHIShader实现。
+
+GlobalShader继承自FShader，GlobalShader包含几个简单的函数，我们可以通过继承GlobalShader来实现自己的Shader。
+
+![image-20240219154105714](Lumen.assets/image-20240219154105714.png)
