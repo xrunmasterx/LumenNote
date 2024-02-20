@@ -468,13 +468,43 @@ Lumen会在对应的Card Page Tile范围生成包围盒，通过包围盒判断�
 
 ## 阴影处理
 
-通常情况下，Dense SM和VSM对阴影的计算都是Camera Visibility的，我们只要算可见场景的阴影，而且一般Deferred Rendering的Gbuffer只有视野范围内最表层的信息，不可见的Pixel都被剔除了。
+通常情况下，Dense SM和VSM对阴影的计算都是Camera Visibility的，我们只要算可见场景的阴影，而且一般Deferred Rendering的Gbuffer只有视野范围内最表层的信息，不可见的Pixel都被剔除了。所以Lumen额外补充了一个叫Off Screen Shadow 的方法来获取离屏阴影。
 
-但由于Mesh Card记录的光照
+### VSM
+
+常规的ShadowMap存在精度问题，如果精度很低，阴影会出现严重的锯齿，如果精度高，这存储量对显存就很不友好。
+
+Virtual Shadow Map 思想很简单，就是用同样的空间去存储更多的细节，而传统的Shadow Map存在一个问题，就是存在冗余的情况，因为传统Shadow Map是在光源视角去看形成的一张深度图，而光源看到的很多位置其实摄像机视角是看不到的，所以其实我们如果能做到把摄像机看不到的部分的Shadow Map给不要了，就可以节省很多的空间，VSM就是利用节省下来的空间放更高精度的Shadow Map。
+
+VSM通过分Tile的思想来做高精度的Shadow Map，通过世界空间Pixel投影到光源视角下再判断深度来标记该Pixel位于哪块Virtual Tile上，再选择是否要保留这块Tile。
+
+![image-20240220121836487](Lumen.assets/image-20240220121836487.png)最终Shadow Map上只保留和摄像机视角下的Pixel重合的部分，看不见的部分全部剔除掉。
+
+![image-20240220121856840](Lumen.assets/image-20240220121856840.png)
+
+尽管Shadow Map的精度很高，但是最终占用的内存可能跟完整的低精度Shadow Map占用内存一样，生成高精度Shadow Map代价不算高，但显存却很珍贵，所以VSM是一种时间换空间的方案。 
+
+### Off Screen Shadow
+
+由于Mesh Card在收集直接光照的时候往往需要从屏幕外的光源里采样（用的是整个Lumen Scenen的Shadow），如果不考虑屏幕外的遮挡情况很容易出现漏光现象，举个例子，下图里光源在屏幕外，如果不考虑屏幕外的遮挡情况，下面的阴影区域就可能被照亮，从而导致漏光。
+
+![image-20240220144126018](Lumen.assets/image-20240220144126018.png)
+
+Off Screen Shadow 主要是通过距离场来做的，主要原因有两个
+
+1. 离屏阴影不需要太准确
+2. SDF算阴影速度非常快
+
+Lumen对Off Screen Shadow的实现分为两步
+
+1. CullMeshObjectsForLightCards
+2. Distance Field Shadow Trace Pass
+
+第一步是**CullMeshObjectsForLightCards**，计算阴影也需要做多光源处理，把光源影响之外的Mesh先剔除掉再计算Shadow，第二步就是**Distance Field Shadow Trace Pass**，通过SDF直接算阴影
 
 ## Final Gather
 
-
+直接光的Final Gather依赖上两个步骤的结果，再CPU端会先执行Batched Light这个Pass，先遍历收集所有有效光源，使用前面CullLightingTiles阶段生成IndirectArgs以GPU Driven的方式计算Radiance并输出到Tile所处Card Page对应的区域上，依次对每个光源进行绘制，对应光源会根据阴影处理生成的Shadow Mask去计算并混合光源的结果，最终的Final Gather会被存进**RWDirectLightingAtlas**中。
 
 # Scene Indirect Lighting（Radiosity）
 
