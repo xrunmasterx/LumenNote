@@ -510,6 +510,30 @@ Lumen对Off Screen Shadow的实现分为两步
 
 # Screen Probe Gather
 
+## Screen Probe Reuse（GI-1.0）
+
+AMD提出的GI1.0内的Radiance Cacheing方案是在Lumen的Screen Probe方案上建立的，他的主要思想就是减少每帧更新的Screen Probe数量来达到优化性能的目的。
+
+### Lumen Screen Probe
+
+### AMD Screen Probe
+
+AMD的Screen Probe实际上就是在Lumen的基础上做的改进，重点说改进部分。
+
+AMD Screen Probe采用的策略是每帧只更新原Lumen Screen Probe 1/4的Probe，其余的Probe尽可能通过复用上一帧的来补全，如果在上一帧找不到可复用的Probe，那缺失的Probe就在下一帧生成，这样不考虑额外过程带来的开销理论上可以提高4倍速度。
+
+下图可见，第一帧只生成1/4的Probe，第四帧才能得到全分辨率的信息。
+
+![image-20240221164009187](Lumen.assets/image-20240221164009187.png)
+
+但每帧只生成1/4的Probe会带来很多的问题，比如说人眼会看到屏幕光照从暗到亮的过程怕（因为4帧延迟）以及复用失败的Probe带来的问题（因为每帧固定只有1/4可以实时计算，坑位就这么多用完了就没有了）
+
+#### 重用（Reuse）
+
+#### 采样（Sampling）
+
+#### 滤波（Filtering）
+
 
 
 
