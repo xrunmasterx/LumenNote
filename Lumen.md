@@ -522,17 +522,47 @@ AMD的Screen Probe实际上就是在Lumen的基础上做的改进，重点说改
 
 AMD Screen Probe采用的策略是每帧只更新原Lumen Screen Probe 1/4的Probe，其余的Probe尽可能通过复用上一帧的来补全，如果在上一帧找不到可复用的Probe，那缺失的Probe就在下一帧生成，这样不考虑额外过程带来的开销理论上可以提高4倍速度。
 
+#### 生成（Spawn Screen Probe）
+
 下图可见，第一帧只生成1/4的Probe，第四帧才能得到全分辨率的信息。
 
 ![image-20240221164009187](Lumen.assets/image-20240221164009187.png)
 
-但每帧只生成1/4的Probe会带来很多的问题，比如说人眼会看到屏幕光照从暗到亮的过程怕（因为4帧延迟）以及复用失败的Probe带来的问题（因为每帧固定只有1/4可以实时计算，坑位就这么多用完了就没有了）
+AMD方案采用固定探针生成模式（Fixed probe spawing pattern）生成Probe，每个Tile会在四帧内每帧都通过低差异序列生成一个Probe，而Lumen是每个Tile每帧都生成4个Probe
 
-#### 重用（Reuse）
+![image-20240221193543844](Lumen.assets/image-20240221193543844.png)
 
-#### 采样（Sampling）
+上面本应4个Probe的Tile每帧只能填一个，每帧生成Probe数量固定就是Lumen的1/4，坑位就这么多用完了就没有了，这帧内其他格子的Probe只能通过重投影或者下一帧再生成
 
-#### 滤波（Filtering）
+这个方案导致人眼会看到屏幕光照从暗到亮的过程怕（因为Reuse失败的Probe会延迟几帧生成）。
+
+#### 重投影（Reprojection Screen Probe）
+
+AMD的方案可以利用Reprojection来避免大部分的Screen Probe的重新生成。
+
+在Tile内生成Screen Probe的过程中，会同时生成上一帧对应的motion vector来对每个Tile执行临时投影找到上一帧的位置，再根据距离和几何差异等因素评估对应位置附近History Probe和Current Probe的差异度，差异最小的History Probe信息直接被填充到Current Probe内，以此来减少开销。
+
+![image-20240221192612564](Lumen.assets/image-20240221192612564.png)
+
+AMD的方案用32位整数前16位存储差异度信息，后十六位存储Local Data Share（存储同Tile多帧History Probe）内的索引
+
+![image-20240221192649803](Lumen.assets/image-20240221192649803.png)
+
+##### 重投影的优化
+
+采用固定探针生成模式生成Probe的方式其实存在部分问题，当1/4的Probe生成完了，其余的Probe通过Reuse获取，但Reuse失败的Probe就只能等下一帧的1/4Probe了，而屏幕快速移动的时候有很大一部分Probe是找不到上一帧对应的，这就会造成只有1/4Probe能生成，其他位置出现大面积空缺。
+
+![image-20240221201929836](Lumen.assets/image-20240221201929836.png)
+
+原算法下1/4Probe是通过地差异序列固定位置生成的，这往往会出现一种个情况就是在这个位置生成的Probe其实可以Reuse上一帧的，这就会导致生成浪费，因为每一帧生成Probe的名额是有限的，应该把生成Probe的名额让给Reuse失败的格子，这种自适应孔填充的方法可以减少Probe空缺。
+
+
+
+其实当这一帧生成Probe的可以通过Reuse获取的时候，就没必要生成了，因为每一帧生成的Probe数量有限，可以把生成Probe的名额让给Reuse失败的格子。
+
+#### 采样（Ray Sampling）
+
+#### 滤波（Screen Probe Filtering）
 
 
 
