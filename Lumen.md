@@ -99,7 +99,7 @@ Hi-Z就是一种自适应步长的加速方案，在该方案中，不同级别�
 
 ![image-20240222142911252](Lumen.assets/image-20240222142911252.png)
 
-通常我们把粗糙MipMap直至MipMap里面一个像素能完全包裹一个包围盒再做上面的判断，这样就最少一次就可以剔除掉物体了，但UE一般采用的是4×4的判断方式，因为极端情况下，如果包围盒中心恰好在屏幕正中心，而包围盒又占不满那一个Tixel，该包围盒就可能受到Tixel内其他位置的深度影响，本该被剔除却因为这种原因没被剔除，这就会导致遮挡剔除命中率降低。
+通常我们会一直找更高级别的MipMap直到该层级MipMap里面一个像素能完全包裹一个包围盒再做上面的判断，这样就最少一次就可以剔除掉物体了，但UE一般采用的是4×4的判断方式，因为极端情况下，如果包围盒中心恰好在屏幕正中心，而包围盒又占不满那一个Tixel，该包围盒就可能受到Tixel内其他位置的深度影响，本该被剔除却因为这种原因没被剔除，这就会导致遮挡剔除命中率降低。
 
 ![image-20240222144013338](Lumen.assets/image-20240222144013338.png)
 
@@ -616,11 +616,11 @@ AMD Screen Probe采用的策略是每帧只更新原Lumen Screen Probe 1/4的Pro
 
 ![image-20240221164009187](Lumen.assets/image-20240221164009187.png)
 
-AMD方案采用固定探针生成模式（Fixed probe spawing pattern）生成Probe，每个Tile会在四帧内每帧都通过低差异序列生成一个Probe，而Lumen是每个Tile每帧都生成4个Probe
+AMD方案采用固定探针生成模式（Fixed probe spawing pattern）生成Probe，每个Tile会在四帧内每帧都通过低差异序列生成一个Probe，且每8×8Tile最多有8×8个Probe，每个Tile大小是8×8个Pixel且有生成Current Probe或者复用History Probe两种策略。**下面为了方便表述我们把Tile称为格子**
 
 ![image-20240221193543844](Lumen.assets/image-20240221193543844.png)
 
-上面本应4个Probe的Tile每帧只能填一个，每帧生成Probe数量固定就是Lumen的1/4，坑位就这么多用完了就没有了，这帧内其他格子的Probe只能通过重投影或者下一帧再生成
+以四个Tile为一组，上面本应一每帧生成一组4个Probe，但现在每帧只能填一个，每帧生成Probe数量固定就是Lumen的1/4，坑位就这么多用完了就没有了，这帧内该组其他格子的Probe只能通过重投影或者下一帧再生成
 
 这个方案导致人眼会看到屏幕光照从暗到亮的过程怕（因为Reprojection失败的Probe会延迟几帧生成）。
 
@@ -628,7 +628,7 @@ AMD方案采用固定探针生成模式（Fixed probe spawing pattern）生成Pr
 
 AMD的方案可以利用Reprojection来避免大部分的Screen Probe的重新生成。
 
-在Tile内生成Screen Probe的过程中，会同时生成上一帧对应的motion vector来对每个Tile执行临时投影找到上一帧的位置，再根据距离、深度、发现和几何差异等因素评估对应位置附近History Probe和Current Probe的差异度来量化一个分数，分数（差异度）最小的History Probe信息直接被填充到Current Probe内，以此来减少开销。
+在Tile内生成Screen Probe的过程中，会同时生成上一帧对应的motion vector来对每个格子执行临时投影找到上一帧的位置，再根据距离、深度、发现和几何差异等因素评估对应位置附近History Probe和Current Probe的差异度来量化一个分数，分数（差异度）最小的History Probe信息直接被填充到Current Probe内，以此来减少开销。
 
 ![image-20240221192612564](Lumen.assets/image-20240221192612564.png)
 
@@ -637,6 +637,8 @@ AMD的方案用32位整数前16位存储差异度信息，后十六位存储Loca
 ![image-20240221192649803](Lumen.assets/image-20240221192649803.png)
 
 ##### 重投影的优化
+
+###### 交换队列自适应补洞
 
 采用固定探针生成模式生成Probe的方式其实存在部分问题，当1/4的Probe生成完了，其余的Probe通过Reprojection获取，但Reprojection失败的Probe就只能等下一帧的1/4Probe了，而屏幕快速移动的时候有很大一部分Probe是找不到上一帧对应的，这就会造成只有1/4Probe能生成，其他位置出现大面积空缺。
 
@@ -652,13 +654,13 @@ AMD方案用了3种Tile队列来实现这种自适应算法。
 
 下图中生成小球的Tile即为未改进算法原本要生成Probe的地方。
 
-蓝色Tile表示该Tile内Probe Reprojection成功，可复用上一帧生成的。
+蓝色格子表示该Tile内Probe Reprojection成功，可复用上一帧生成的。
 
-红色Tile代表Reprojection失败的。
+红色格子代表Reprojection失败的。
 
 ![image-20240222103525592](Lumen.assets/image-20240222103525592.png)
 
-自适应算法应该要把生成Probe的机会用在Reprojection失败的Tile（红色Tile），也就是下图的生成模式，原文不建议把所有Override_tiles生成Probe的机会都让给empty_tiles，所以采用了随机抽取的方式。
+自适应算法应该要把生成Probe的机会用在Reprojection失败的Tile（红色格子），也就是下图的生成模式，原文不建议把所有Override_tiles生成Probe的机会都让给empty_tiles，所以采用了随机抽取的方式。
 
 ![image-20240222104531195](Lumen.assets/image-20240222104531195.png)
 
@@ -674,17 +676,133 @@ AMD方案用了3种Tile队列来实现这种自适应算法。
 
 ![image-20240222105647402](Lumen.assets/image-20240222105647402.png)
 
+###### LRU存储多帧History Probe
+
+该方案在重投影的是会评估附近History Probe看有没有合适的Probe可以直接在当前帧重用，这个评估过程如果只考虑上一帧的History Probe会导致遇到很薄的物体的时候大部分Reprojection都失效。
+
+从下图来分析：
+
+第一帧的Probe在1号位置生成，而1号位置在一个很薄的几何体表面。
+
+第二帧的Probe在2号位置生成，但2号位置不在薄表面上，几何差异导致不能重用1号Probe
+
+第三帧的Probe在3号位置生成，3号位置在薄表面上，但2号Probe不在，所以不能复用2号Probe，而1号Probe因为和3号Probe同处于薄表面上，所以3号Probe其实是可以重用1号Probe的，但是因为只存了上一帧的History Probe导致了Temporal总是复用失败。
+
+![image-20240223161611806](Lumen.assets/image-20240223161611806.png)
+
+AMD采用的解决方案是采用一个LRU来存储，每个Tile都会有一个持久的队列用来存储多帧以前附近已失效的History Probe，这样从多帧里面找可复用的Probe大大提高了Reprojection的成功率。
+
 #### 采样（Ray Sampling）
 
+AMD方案里Probe的采样方式跟Lumen的有很多地方是不一样的，下面分为2个部分分析。
 
+* 1/4需要重新生成（发射射线）的Probe的采样
+* 3/4不需要重新生成（不发射射线）的Probe的采样
+
+##### 1/4需要重新生成的Probe
+
+每帧固定有1/4的Probe会发射射线来更新光照信息，但是这些Probe需要细分成两种情况
+
+* Reprojection失败生成Probe
+* Reprojection成功生成Probe
+
+固定生成的Probe可以用于补充empty_tiles，但多帧以后大部分tiles里的Probe都是可以找到上一帧对应的，所以这种时候empty_tiles的数量会很少，大部分处于第二种就是在override_tiles里重投影成功但仍主动生成Probe的情况，这些格子里的Probe虽然可以复用上一帧的，但是一直复用历史信息是不合理的，仍需要更新Probe收集外界动态变化的光线，该方案里更新Probe的方案就是根据上面两种情况生成不同的lighting pdf来进行采样操作。
+
+###### Reprojection失败生成Probe
+
+在前几帧或者是快速移动的时候有部分Probe没办法找到上一帧的对应，这种时候AMD的方案会把大量的生成Probe的机会都让给这些无法复用上一帧Probe的格子，这些Probe重新生成的时候，由于Reprojection失败，也就没办法用上一帧Probe的信息去guide ray sampling，AMD采用的方案是向每个Texel（半球上面的采样点）均匀发射射线（均匀pdf），也就是类似于漫反射那样的采样，既然没办法重要性采样就直接半球均匀采样。
+
+![image-20240223112403305](Lumen.assets/image-20240223112403305.png)
+
+###### Reprojection成功生成Probe
+
+如果Reprojection成功则代表着可以利用历史信息，具体的思想是用历史信息Radiance信息去guide ray sampling，AMD的具体方法是先综合考虑附近3×3范围内Reprojection成功Probe的辐射度信息来评估lighting pdf，例如下图黄色里的是需要新生成的Probe，蓝色格子里是重投影成功的Probe。
+
+![image-20240223142953081](Lumen.assets/image-20240223142953081.png)
+
+遍历这些重投影成功（蓝色）的格子里的Probe并根据这些Probe与原生成点的视角做视差矫正，做完视差矫正会得到一个偏移量，根据偏移量对辐射度信息进行偏移后通过InterlockedAdd（原子加法）累积到新生成但未计算（黄色）的Probe中，最后再归一化，这一步的目的是综合考虑附近重投影成功的Probe的辐射度来生成一个lighting pdf决定要朝哪些Texel发射更多的Ray。
+
+![image-20240223162138886](Lumen.assets/image-20240223162138886.png)
+
+考虑上一帧多个Probe辐射度来计算lighting pdf跟Lumen的类似，辐射度贴图里面较亮的地方确代表着光源的位置。
+
+![image-20240223144615690](Lumen.assets/image-20240223144615690.png)
+
+不同的地方是采样方案，Lumen把这一帧Probe投影到上一帧找到上一帧附近的History Probe来做混合最终得到lighting pdf，因为把这一帧Probe投影到上一帧后很多时候已经丢失了真实的位置信息（如果这一帧的Probe投影到上一帧的位置被遮挡住了，位置信息就不对），所以没办法做视差矫正。
+
+AMD的方案是把在可以重投影的格子里直接用上一帧的Probe替换掉这一帧对应位置的Probe，那所有计算就是在这一帧准确位置上执行的，所以知道位置信息就可以根据深度（History Probe额外记录了深度信息）还原周围重投影成功的Probe接收光源的位置，然后这一帧新生成的Probe直接和光源连线，之间的夹角就可以算出偏移。
+
+![image-20240223150412494](Lumen.assets/image-20240223150412494.png)
+
+从上图可知AMD方案采用的世界偏移可以很好的解决重要性采样发射光线因为位置的问题导致的不准确问题。
+
+
+
+##### 3/4不需要重新生成的Probe
+
+不需要生成Probe的位置不发射射线，所以直接重用上一帧重投影附近的Probe，重用失败则等下一帧处理，但除了前几帧，多帧以后基本大多数格子都能重投影成功。
 
 #### 滤波（Screen Probe Filtering）
 
+##### Guide Ray带来的问题
+
+由于引导机制的重要性采样会让光线只从部分的Texel发射，也就是一个Probe64个Texel可能只有16个会发射光线，其他Texel的lighting pdf为0直接就不发射光线了，而每个Texel的发射的光线数量又是一样的，所以这会导致能量的不守恒，
+
+如果额外发射光线会带来太大时间损害，而太多了用History Probe来Filtering则会带来强烈的视觉伪影，AMD采用了最暴力的方式就是直接对发射了Ray的Texel获取的能量进行平均然后均匀分布到没发射Ray的Texel上。
+
+以下是平均前和平均后的效果图。
+
+![image-20240223154343322](Lumen.assets/image-20240223154343322.png)
+
+![image-20240223154408300](Lumen.assets/image-20240223154408300.png)
+
+##### 时序滤波
+
+AMD的时序滤波方案只针对于重投影成功且主动发射光线的格子，因为时序滤波做Filtering需要依赖History Probe的Radiance信息和Probe发射射线返回的Radiance信息，因为上一步采样获取lighting pdf的过程中也可以获取到History的信息，所以AMD在发射完射线获取了Radiance后直接就做了时序滤波。
 
 
 
+AMD方案的时序滤波的混合因子和Lumen的有所不同，他在新的Radiance和历史Radiance之间使用了误差值来评估，这样有助于增加亮度较暗的采样点相对于亮度较高的采样点的权重，同时剔除掉小于特定粒度的光源，因为光源太小采样分辨率又很低就很难命中光源，这样可以减少噪点提升画面的Temporal稳定性
+
+![image-20240223154321901](Lumen.assets/image-20240223154321901.png)
+
+##### 空间滤波
+
+AMD的空间滤波方案是在生活完所有Probe之后进行的，Filtering采样了7×7附近的Probe并采用separable blur的方式来减少混合带来的时间损耗（横向Blur和纵向Blur两个Pass）。
+
+同时该方法会在使用重投影后的Probe的时候估计角度误差Clamped Distance来保留小范围的遮挡细节
+
+未使用Clamped Distance
+
+![image-20240223160622312](Lumen.assets/image-20240223160622312.png)
+
+使用Clamped Distance后
+
+![image-20240223160637882](Lumen.assets/image-20240223160637882.png)
 
 
+
+###### Probe Mask MipMap
+
+为了空间滤波的准确性，AMD在做空间滤波的时候跳过了Reprojection失败的Probe，为了加快找到最近的可做空间滤波的Probe的过程，AMD采用了Probe Mask MipMap的方式。
+
+在一开始Reprojection的过程中会有一个Pass对Reprojection失败的格子做标记（下图标为红色），同时生成这一张Mask的MipMap，每高一级的MipMap存储比他低一级的MipMap里4个Probe中最合理（最适合使用）的一个Probe的位置，如果上一级Mask所有格子都重投影失败的该层级Mask对应Pixel标记为红色，只要上一级Mask有以一个合适的Probe则该层级Mask对应Pixel标记为黑色。
+
+举个例子如果出现需要用新生成的Probe左边离他最近的那个重投影成功的Probe来做滤波的时候，就会向最低层级的Mask发起查找，如果离左边最近那个Probe的位置标记为红色，则查更高级的Mask，因为越高级的Mask覆盖的Probe越多，找多几级总能找到左边适合用来做滤波的Probe。
+
+0级Probe Mask
+
+![image-20240223160018405](Lumen.assets/image-20240223160018405.png)
+
+1级Probe Mask
+
+![image-20240223160035248](Lumen.assets/image-20240223160035248.png)
+
+2级Probe Mask
+
+![image-20240223160336793](Lumen.assets/image-20240223160336793.png)
+
+通过多级Probe Mask的方式可以快速找到附近可用来做空间滤波的Probe。
 
 
 
