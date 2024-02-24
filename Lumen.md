@@ -644,7 +644,7 @@ AMD的方案用32位整数前16位存储差异度信息，后十六位存储Loca
 
 ![image-20240221201929836](Lumen.assets/image-20240221201929836.png)
 
-原算法下1/4Probe是通过地差异序列固定位置生成的，这往往会出现一种个情况就是在这个位置生成的Probe其实可以复用上一帧的，这就会导致生成浪费，因为每一帧生成Probe的名额是有限的，应该把生成Probe的名额让给Reprojection失败的格子，这种自适应孔填充的方法可以减少Probe空缺。
+原算法下1/4Probe是通过低序列固定位置生成的，这往往会出现一种个情况就是在这个位置生成的Probe其实可以复用上一帧的，这就会导致生成浪费，因为每一帧生成Probe的名额是有限的，应该把生成Probe的名额让给Reprojection失败的格子，这种自适应孔填充的方法可以减少Probe空缺。
 
 AMD方案用了3种Tile队列来实现这种自适应算法。
 
@@ -660,7 +660,7 @@ AMD方案用了3种Tile队列来实现这种自适应算法。
 
 ![image-20240222103525592](Lumen.assets/image-20240222103525592.png)
 
-自适应算法应该要把生成Probe的机会用在Reprojection失败的Tile（红色格子），也就是下图的生成模式，原文不建议把所有Override_tiles生成Probe的机会都让给empty_tiles，所以采用了随机抽取的方式。
+自适应算法应该要把生成Probe的机会用在Reprojection失败的Tile（红色格子），也就是下图的生成模式，原文不建议把所有Override_tiles生成Probe的机会都让给empty_tiles（下面有说这是因为全部Probe都使用历史信息是不合理的，需要有Probe发射射线更新动态光照），所以采用了随机抽取的方式。
 
 ![image-20240222104531195](Lumen.assets/image-20240222104531195.png)
 
@@ -716,7 +716,7 @@ AMD方案里Probe的采样方式跟Lumen的有很多地方是不一样的，下�
 
 ###### Reprojection成功生成Probe
 
-如果Reprojection成功则代表着可以利用历史信息，具体的思想是用历史信息Radiance信息去guide ray sampling，AMD的具体方法是先综合考虑附近3×3范围内Reprojection成功Probe的辐射度信息来评估lighting pdf，例如下图黄色里的是需要新生成的Probe，蓝色格子里是重投影成功的Probe。
+如果Reprojection成功则代表着可以利用历史信息，具体的思想是用历史信息Radiance信息去guide ray sampling，AMD的具体方法是先综合考虑附近3×3范围内Reprojection成功Probe（通过后面讲到的Probe Mask可以快速获取到）的辐射度信息来评估lighting pdf，例如下图黄色里的是需要新生成的Probe，蓝色格子里是重投影成功的Probe。
 
 ![image-20240223142953081](Lumen.assets/image-20240223142953081.png)
 
@@ -734,7 +734,9 @@ AMD的方案是把在可以重投影的格子里直接用上一帧的Probe替换
 
 ![image-20240223150412494](Lumen.assets/image-20240223150412494.png)
 
-从上图可知AMD方案采用的世界偏移可以很好的解决重要性采样发射光线因为位置的问题导致的不准确问题。
+光源离的越近Reprojected probe和Newly spawned probe对光源的采样角度差异就会越大，如果不做视差矫正就会导致Newly spawned probeTrace的光线可能没办法命中光源导致最终效果变暗的情况。
+
+从AMD方案采用的视差矫正带来的偏移可以很好的解决重要性采样发射光线因为位置差异导致的不准确问题。
 
 
 
@@ -758,9 +760,7 @@ AMD的方案是把在可以重投影的格子里直接用上一帧的Probe替换
 
 ##### 时序滤波
 
-AMD的时序滤波方案只针对于重投影成功且主动发射光线的格子，因为时序滤波做Filtering需要依赖History Probe的Radiance信息和Probe发射射线返回的Radiance信息，因为上一步采样获取lighting pdf的过程中也可以获取到History的信息，所以AMD在发射完射线获取了Radiance后直接就做了时序滤波。
-
-
+AMD的时序滤波方案只针对于重投影成功且主动发射光线（主动生成Probe）的格子，时序滤波做Filtering需要依赖History Probe的Radiance信息和Probe发射射线返回的Radiance信息，因为上一步采样获取lighting pdf的过程中也可以获取到History的信息，所以AMD在发射完射线获取了Radiance后直接就做了时序滤波。
 
 AMD方案的时序滤波的混合因子和Lumen的有所不同，他在新的Radiance和历史Radiance之间使用了误差值来评估，这样有助于增加亮度较暗的采样点相对于亮度较高的采样点的权重，同时剔除掉小于特定粒度的光源，因为光源太小采样分辨率又很低就很难命中光源，这样可以减少噪点提升画面的Temporal稳定性
 
@@ -768,7 +768,7 @@ AMD方案的时序滤波的混合因子和Lumen的有所不同，他在新的Rad
 
 ##### 空间滤波
 
-AMD的空间滤波方案是在生活完所有Probe之后进行的，Filtering采样了7×7附近的Probe并采用separable blur的方式来减少混合带来的时间损耗（横向Blur和纵向Blur两个Pass）。
+AMD的空间滤波方案是在生成完所有Probe之后进行的，Filtering采样了7×7附近的Probe并采用separable blur的方式来减少混合带来的时间损耗（横向Blur和纵向Blur两个Pass）。
 
 同时该方法会在使用重投影后的Probe的时候估计角度误差Clamped Distance来保留小范围的遮挡细节
 
@@ -786,7 +786,7 @@ AMD的空间滤波方案是在生活完所有Probe之后进行的，Filtering采
 
 为了空间滤波的准确性，AMD在做空间滤波的时候跳过了Reprojection失败的Probe，为了加快找到最近的可做空间滤波的Probe的过程，AMD采用了Probe Mask MipMap的方式。
 
-在一开始Reprojection的过程中会有一个Pass对Reprojection失败的格子做标记（下图标为红色），同时生成这一张Mask的MipMap，每高一级的MipMap存储比他低一级的MipMap里4个Probe中最合理（最适合使用）的一个Probe的位置，如果上一级Mask所有格子都重投影失败的该层级Mask对应Pixel标记为红色，只要上一级Mask有以一个合适的Probe则该层级Mask对应Pixel标记为黑色。
+在一开始Reprojection的过程中会有一个Pass对Reprojection失败的格子做标记（下图标为红色），同时生成这一张Mask的MipMap，每高一级的MipMap存储比他低一级的MipMap里4个Probe中最合理（最适合使用）的一个Probe的位置，如果低一级Mask对应位置所有格子都重投影失败的话，该层级Mask对应Pixel标记为红色，只要上一级Mask有任何一个合适的Probe则该层级Mask对应Pixel标记为黑色。
 
 举个例子如果出现需要用新生成的Probe左边离他最近的那个重投影成功的Probe来做滤波的时候，就会向最低层级的Mask发起查找，如果离左边最近那个Probe的位置标记为红色，则查更高级的Mask，因为越高级的Mask覆盖的Probe越多，找多几级总能找到左边适合用来做滤波的Probe。
 
